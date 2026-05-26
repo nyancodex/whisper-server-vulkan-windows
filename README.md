@@ -8,10 +8,36 @@ The point: get an **OpenAI-compatible `/v1/audio/transcriptions` endpoint** runn
 
 | File | Size | What it is |
 |---|---|---|
-| `whisper-server-bundle.zip` | ~19 MB | `whisper-server.exe` + `whisper-cli.exe` + 5 native DLLs (whisper, ggml, ggml-base, ggml-cpu, ggml-vulkan) + VC++ 2015-2022 redist DLLs + a sample `jfk.wav`. **No model inside** — the deploy script fetches one from HuggingFace. |
-| `deploy-whisper-server.ps1` | ~8 KB | Extract → download model → smoke test → optional auto-start at logon. |
+| `whisper-server-bundle.zip` | ~19 MB | `whisper-server.exe` + `whisper-cli.exe` + 5 native DLLs (whisper, ggml, ggml-base, ggml-cpu, ggml-vulkan) + VC++ 2015-2022 redist DLLs + a sample `jfk.wav`. |
+| `deploy-whisper-server.ps1` | ~9 KB | Interactive model picker → extract → download model → smoke test → optional auto-start at logon. |
 
-The model (default: `ggml-large-v3-turbo-q5_0.bin`, ~547 MB) is downloaded from `huggingface.co/ggerganov/whisper.cpp` on first run. Override with `-Model <other.bin>` or `-ModelURL <url>` to use a different one (whisper-small, distil-large-v3.5, etc.).
+> ⚠️ **The Whisper model is _not_ included in this repository.** The model file
+> (75 MB - 575 MB depending on size) is downloaded from
+> [huggingface.co/ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp)
+> the first time you run `deploy-whisper-server.ps1`. This keeps the git repo
+> small enough to clone quickly and avoids re-distributing the model weights.
+> A working internet connection is required on first run.
+
+## Models
+
+When you run the deploy script with no `-Model` flag, it shows an interactive
+picker so you can choose based on your hardware and accuracy needs:
+
+| # | Model | Size | WER (LS-clean) | Notes |
+|---|---|---|---|---|
+| 1 | `ggml-tiny.bin` | 75 MB | ~7-8% | Fastest, English-heavy, low-power boxes |
+| 2 | `ggml-base.bin` | 142 MB | ~5% | Good speed/quality tradeoff |
+| 3 | `ggml-small.bin` | 466 MB | ~3.4% | Balanced classic pick |
+| 4 | `ggml-large-v3-turbo-q5_0.bin` | 547 MB | ~2% | Multilingual (99 langs), **recommended default** |
+
+To skip the prompt and use the default, pass `-Yes`. To use a different model,
+pass `-Model ggml-<name>.bin` (any file from
+[the upstream HuggingFace repo](https://huggingface.co/ggerganov/whisper.cpp/tree/main)),
+or `-ModelURL <full-url>` to fetch from a mirror.
+
+The model lives at `<InstallDir>\models\<file>.bin` after download. Re-running
+the script with the same `-InstallDir` and the same `-Model` reuses the cached
+file — no second download.
 
 ## Prerequisites
 
@@ -29,21 +55,41 @@ No compiler, no Vulkan SDK, no Python, no Docker.
 ## Usage
 
 ```powershell
-# Default: extract to %USERPROFILE%\whisper-server, port 8088, download large-v3-turbo
+# Interactive: pick model size from the menu, then unzip + download + smoke test
 .\deploy-whisper-server.ps1
 
-# Custom install location and port
-.\deploy-whisper-server.ps1 -InstallDir D:\whisper -Port 9000
+# Non-interactive: use the default model (large-v3-turbo-q5_0)
+.\deploy-whisper-server.ps1 -Yes
 
-# Smaller model
+# Explicit model, skip the picker
 .\deploy-whisper-server.ps1 -Model ggml-small.bin
 
-# Production: auto-start at logon and leave running now
-.\deploy-whisper-server.ps1 -InstallDir D:\whisper -AutoStart -StartNow
+# Custom install location and port
+.\deploy-whisper-server.ps1 -InstallDir D:\whisper -Port 9000 -Yes
 
-# Re-run later, skip extract and re-download (just smoke-test + register the task)
+# Production: auto-start at logon and leave running now
+.\deploy-whisper-server.ps1 -InstallDir D:\whisper -AutoStart -StartNow -Yes
+
+# Re-run later: keep the extracted bundle + cached model, just smoke-test + (re)register the task
 .\deploy-whisper-server.ps1 -InstallDir D:\whisper -SkipExtract -SkipModelDownload -AutoStart
 ```
+
+### All flags
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-Zip <path>` | `.\whisper-server-bundle.zip` | Path to the bundle zip. |
+| `-InstallDir <path>` | `$env:USERPROFILE\whisper-server` | Where the runtime is extracted. |
+| `-Port <int>` | `8088` | Port the HTTP server listens on. |
+| `-BindHost <ip>` | `0.0.0.0` | Interface to bind (`127.0.0.1` for local-only). |
+| `-InferencePath <path>` | `/v1/audio/transcriptions` | URL path for the inference endpoint. |
+| `-Model <file>` | _interactive picker_ | Which `.bin` model to use; skips the picker. |
+| `-ModelURL <url>` | _HuggingFace pattern_ | Override the download URL (for mirrors). |
+| `-Yes` | off | Skip the interactive picker, use the default model. |
+| `-AutoStart` | off | Register a Scheduled Task that launches the server at user logon. |
+| `-StartNow` | off | Leave the server running after the smoke test instead of stopping it. |
+| `-SkipExtract` | off | Reuse an existing extracted `InstallDir` (no re-unzip). |
+| `-SkipModelDownload` | off | Don't try to fetch the model; expects a pre-staged file. |
 
 If PowerShell blocks the script with an execution-policy error, run it once with the bypass:
 

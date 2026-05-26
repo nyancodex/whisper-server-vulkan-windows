@@ -7,12 +7,17 @@
 # The driver provides vulkan-1.dll system-wide. Run `vulkaninfo --summary` to verify.
 #
 # Usage:
-#   .\deploy-whisper-server.ps1                       # unzip + download model + smoke test
+#   .\deploy-whisper-server.ps1                       # interactive: pick model size, then unzip + download + smoke test
+#   .\deploy-whisper-server.ps1 -Yes                  # non-interactive: use default model (large-v3-turbo-q5_0)
+#   .\deploy-whisper-server.ps1 -Model ggml-small.bin # explicit model, skips the picker
 #   .\deploy-whisper-server.ps1 -InstallDir D:\whisper -Port 8088
-#   .\deploy-whisper-server.ps1 -Model ggml-small.bin # smaller alternative (~466 MB)
 #   .\deploy-whisper-server.ps1 -AutoStart            # also register Scheduled Task for auto-start at logon
 #   .\deploy-whisper-server.ps1 -StartNow             # leave the server running after the smoke test
 #   .\deploy-whisper-server.ps1 -SkipModelDownload    # use a model you've already copied into models\
+#
+# The model is NOT bundled in this repo -- the .bin file is downloaded on first
+# run from https://huggingface.co/ggerganov/whisper.cpp (75 MB - 575 MB depending
+# on which one you pick).
 
 [CmdletBinding()]
 param(
@@ -21,17 +26,52 @@ param(
     [int]$Port              = 8088,
     [string]$BindHost       = '0.0.0.0',
     [string]$InferencePath  = '/v1/audio/transcriptions',
-    [string]$Model          = 'ggml-large-v3-turbo-q5_0.bin',
+    [string]$Model,
     [string]$ModelURL,
+    [switch]$Yes,
     [switch]$AutoStart,
     [switch]$StartNow,
     [switch]$SkipExtract,
     [switch]$SkipModelDownload
 )
 
+# Models the picker offers. Sizes are the on-disk .bin size; WER notes are
+# rough LibriSpeech-clean numbers from public benchmarks. The HuggingFace URL
+# pattern is the same for all of them.
+$ModelChoices = @(
+    [pscustomobject]@{ Key='1'; File='ggml-tiny.bin';                  Size='75 MB';  WER='~7-8%'; Note='fastest, English-heavy, low-power boxes' }
+    [pscustomobject]@{ Key='2'; File='ggml-base.bin';                  Size='142 MB'; WER='~5%';   Note='good speed/quality tradeoff' }
+    [pscustomobject]@{ Key='3'; File='ggml-small.bin';                 Size='466 MB'; WER='~3.4%'; Note='balanced classic pick' }
+    [pscustomobject]@{ Key='4'; File='ggml-large-v3-turbo-q5_0.bin';   Size='547 MB'; WER='~2%';   Note='multilingual (99 langs), recommended default' }
+)
+$DefaultModel = 'ggml-large-v3-turbo-q5_0.bin'
+
 $ErrorActionPreference = 'Stop'
 
 function Step($msg) { Write-Host "`n=== $msg ===" -ForegroundColor Cyan }
+
+# Prompt the user to pick a Whisper model. Returns the chosen .bin filename.
+# Non-interactive shells (no $Host.UI) fall through to the default.
+function Prompt-Model {
+    param([array]$Choices, [string]$Default)
+    Write-Host ''
+    Write-Host 'Pick a Whisper model to download:' -ForegroundColor Yellow
+    Write-Host ''
+    $fmt = '  [{0}]  {1,-32}  {2,7}  WER {3,-6}  {4}'
+    foreach ($c in $Choices) {
+        $isDefault = if ($c.File -eq $Default) { ' (default)' } else { '' }
+        Write-Host ($fmt -f $c.Key, ($c.File + $isDefault), $c.Size, $c.WER, $c.Note)
+    }
+    Write-Host ''
+    Write-Host 'All files are downloaded from https://huggingface.co/ggerganov/whisper.cpp'
+    Write-Host ''
+    $sel = Read-Host "Choice (1-$($Choices.Count), Enter for default)"
+    if ([string]::IsNullOrWhiteSpace($sel)) { return $Default }
+    $match = $Choices | Where-Object { $_.Key -eq $sel.Trim() } | Select-Object -First 1
+    if ($match) { return $match.File }
+    Write-Warning "Invalid selection '$sel'; using default $Default"
+    return $Default
+}
 
 # --- 1. Vulkan driver sanity check -----------------------------------------
 Step 'Checking Vulkan driver'
@@ -61,7 +101,20 @@ $serverExe = Join-Path $InstallDir 'whisper-server.exe'
 $modelsDir = Join-Path $InstallDir 'models'
 New-Item -ItemType Directory -Force -Path $modelsDir | Out-Null
 
-# --- 3. Ensure a model is present -------------------------------------------
+# --- 3. Resolve model selection ---------------------------------------------
+# Precedence:
+#   1. explicit -Model <file>          -> use it (skip picker)
+#   2. -Yes / -SkipModelDownload       -> default, no prompt
+#   3. otherwise                       -> interactive picker
+if (-not $Model) {
+    if ($Yes -or $SkipModelDownload) {
+        $Model = $DefaultModel
+    } else {
+        $Model = Prompt-Model -Choices $ModelChoices -Default $DefaultModel
+    }
+}
+
+# --- 4. Ensure the chosen model is present ----------------------------------
 $modelPath = Join-Path $modelsDir $Model
 if (-not (Test-Path $modelPath)) {
     if ($SkipModelDownload) {
@@ -74,7 +127,7 @@ if (-not (Test-Path $modelPath)) {
     Step "Downloading model $Model"
     Write-Host "From: $ModelURL"
     Write-Host "To:   $modelPath"
-    Write-Host '(large-v3-turbo-q5_0 is ~575 MB; first download can take several minutes)'
+    Write-Host '(first download can take several minutes; see https://huggingface.co/ggerganov/whisper.cpp for file sizes)'
     # Use Start-Process so curl's stderr progress bar doesn't get wrapped as a PowerShell
     # error record (PS 5.1 with $ErrorActionPreference=Stop aborts on the first stderr line otherwise).
     $curlProc = Start-Process -FilePath 'curl.exe' `
@@ -84,7 +137,9 @@ if (-not (Test-Path $modelPath)) {
         Write-Error "Model download failed (curl exit $($curlProc.ExitCode)). Check network / URL and re-run."
     }
     $size = (Get-Item $modelPath).Length
-    if ($size -lt 50MB) {
+    # Even the smallest legitimate Whisper GGML file (tiny.en-q5_1) is ~25 MB.
+    # Anything well below that is almost certainly an HTML error page from HuggingFace.
+    if ($size -lt 20MB) {
         Remove-Item $modelPath -Force
         Write-Error "Downloaded file is only $size bytes -- likely an HTML error page. Aborted."
     }
