@@ -1,8 +1,16 @@
-# Anything the deploy script writes when run from inside a clone
+# Anything the launcher / deploy writes when run from inside a clone
 *.bin
 models/
 whisper-server-install/
 *.log
+
+# .NET build output
+launcher/bin/
+launcher/obj/
+launcher/publish/
+launcher/publish-fwdep/
+# Don't commit the bundle copy that lands next to the built exe
+launcher/**/whisper-server-bundle.zip
 
 # Editor / OS
 .vscode/
