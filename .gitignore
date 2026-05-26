@@ -1,0 +1,11 @@
+# Anything the deploy script writes when run from inside a clone
+*.bin
+models/
+whisper-server-install/
+*.log
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
