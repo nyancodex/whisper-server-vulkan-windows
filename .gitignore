@@ -12,6 +12,9 @@ launcher/publish-fwdep/
 # Don't commit the bundle copy that lands next to the built exe
 launcher/**/whisper-server-bundle.zip
 
+# Self-contained launcher build (~69 MB) -- distributed as a GitHub Release asset, not committed
+whisper-launcher-selfcontained.exe
+
 # Editor / OS
 .vscode/
 .idea/
